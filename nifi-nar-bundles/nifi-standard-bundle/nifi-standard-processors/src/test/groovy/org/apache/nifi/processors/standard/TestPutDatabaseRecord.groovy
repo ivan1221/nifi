@@ -355,6 +355,77 @@ class TestPutDatabaseRecord {
     }
 
     @Test
+    void testInsertBatchUpdateExceptionRemoveDuplicateRecord() throws InitializationException, ProcessException, SQLException, IOException {
+        recreateTable("PERSONS", createPersons)
+        final MockRecordParser parser = new MockRecordParser()
+        runner.addControllerService("parser", parser)
+        runner.enableControllerService(parser)
+
+        parser.addSchemaField("id", RecordFieldType.INT)
+        parser.addSchemaField("name", RecordFieldType.STRING)
+        parser.addSchemaField("code", RecordFieldType.INT)
+
+        parser.addRecord(1, 'rec1', 101)
+        parser.addRecord(2, 'rec2', 102)
+        parser.addRecord(3, 'rec3', 103)
+        parser.addRecord(1, 'rec4', 104)
+        parser.addRecord(1, 'rec4', 104)
+        parser.addRecord(1, 'rec4', 104)
+        parser.addRecord(1, 'rec4', 104)
+        parser.addRecord(4, 'rec4', 104)
+
+        runner.setProperty(PutDatabaseRecord.RECORD_READER_FACTORY, 'parser')
+        runner.setProperty(PutDatabaseRecord.STATEMENT_TYPE, PutDatabaseRecord.INSERT_TYPE)
+        runner.setProperty(PutDatabaseRecord.TABLE_NAME, 'PERSONS')
+        runner.setProperty(PutDatabaseRecord.MAX_BATCH_SIZE, '4')
+        runner.setProperty(RollbackOnFailure.ROLLBACK_ON_FAILURE, 'true')
+        //I set the value to false an exception is expected
+        runner.setProperty(PutDatabaseRecord.REMOVE_DUPLICATE_RECORDS, 'false');
+
+        runner.enqueue(new byte[0])
+
+        try {
+            runner.run()
+            fail("ProcessException is expected")
+        } catch (AssertionError e) {
+            assertTrue(e.getCause() instanceof ProcessException)
+        }
+
+        final Connection conn = dbcp.getConnection()
+        final Statement stmt = conn.createStatement()
+        ResultSet rs = stmt.executeQuery('SELECT * FROM PERSONS')
+
+        // Transaction should be rolled back and table should remain empty.
+        assertFalse(rs.next())
+
+        //I set the value to true, it is expected to remove duplicate records
+        runner.setProperty(PutDatabaseRecord.REMOVE_DUPLICATE_RECORDS, 'true');
+        runner.enqueue(new byte[0])
+        runner.run()
+
+        rs = stmt.executeQuery('SELECT * FROM PERSONS')
+
+        assertTrue(rs.next())
+        assertEquals(1, rs.getInt(1))
+        assertEquals('rec1', rs.getString(2))
+        assertEquals(101, rs.getInt(3))
+        assertTrue(rs.next())
+        assertEquals(2, rs.getInt(1))
+        assertEquals('rec2', rs.getString(2))
+        assertEquals(102, rs.getInt(3))
+        assertTrue(rs.next())
+        assertEquals(3, rs.getInt(1))
+        assertEquals('rec3', rs.getString(2))
+        assertEquals(103, rs.getInt(3))
+        assertTrue(rs.next())
+        assertEquals(4, rs.getInt(1))
+        assertEquals('rec4', rs.getString(2))
+        assertEquals(104, rs.getInt(3))
+        stmt.close()
+        conn.close()
+    }
+
+    @Test
     void testInsertNoTable() throws InitializationException, ProcessException, SQLException, IOException {
         recreateTable("PERSONS", createPersons)
         final MockRecordParser parser = new MockRecordParser()
