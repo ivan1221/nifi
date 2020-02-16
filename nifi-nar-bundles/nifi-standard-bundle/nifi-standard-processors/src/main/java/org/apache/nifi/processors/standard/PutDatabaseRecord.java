@@ -47,7 +47,6 @@ import org.apache.nifi.processor.util.pattern.PartialFunctions;
 import org.apache.nifi.processor.util.pattern.Put;
 import org.apache.nifi.processor.util.pattern.RollbackOnFailure;
 import org.apache.nifi.processor.util.pattern.RoutingResult;
-import org.apache.nifi.schema.access.SchemaNotFoundException;
 import org.apache.nifi.serialization.MalformedRecordException;
 import org.apache.nifi.serialization.RecordReader;
 import org.apache.nifi.serialization.RecordReaderFactory;
@@ -204,15 +203,6 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
             .defaultValue("true")
             .build();
 
-    static final PropertyDescriptor REMOVE_DUPLICATE_RECORDS = new PropertyDescriptor.Builder()
-            .name("put-db-remove-duplicate-records")
-            .displayName("Remove duplicate records")
-            .description("If true, the processor tries to ignore the ONLY restriction errors" +
-                    "If false, the processor will route the flowfile to the fault relationship in the event of a unique key error.")
-            .allowableValues("true", "false")
-            .defaultValue("false")
-            .build();
-
     static final PropertyDescriptor UNMATCHED_FIELD_BEHAVIOR = new PropertyDescriptor.Builder()
             .name("put-db-record-unmatched-field-behavior")
             .displayName("Unmatched Field Behavior")
@@ -302,7 +292,7 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
             .name("put-db-record-max-batch-size")
             .displayName("Maximum Batch Size")
             .description("Specifies maximum batch size for INSERT and UPDATE statements. This parameter has no effect for other statements specified in 'Statement Type'."
-                    + " Zero means the batch size is not limited.")
+                            + " Zero means the batch size is not limited.")
             .defaultValue("0")
             .required(false)
             .addValidator(StandardValidators.NON_NEGATIVE_INTEGER_VALIDATOR)
@@ -328,7 +318,6 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
         pds.add(SCHEMA_NAME);
         pds.add(TABLE_NAME);
         pds.add(TRANSLATE_FIELD_NAMES);
-        pds.add(REMOVE_DUPLICATE_RECORDS);
         pds.add(UNMATCHED_FIELD_BEHAVIOR);
         pds.add(UNMATCHED_COLUMN_BEHAVIOR);
         pds.add(UPDATE_KEYS);
@@ -421,8 +410,7 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
 
                 } else {
                     final DMLSettings settings = new DMLSettings(context);
-                    executeDML(context, session, inputFlowFile, functionContext, result, conn, recordParser, statementType,
-                            settings, in, recordParserFactory);
+                    executeDML(context, session, inputFlowFile, functionContext, result, conn, recordParser, statementType, settings);
                 }
             }
 
@@ -447,6 +435,7 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
                     getLogger().error("Failed to rollback database due to {}, transaction may be incomplete.", new Object[]{re}, re);
                 }
             }
+
             // Embed Exception detail to FlowFile attribute then delegate error handling to default and rollbackOnFailure.
             final FlowFile flowFileWithAttributes = session.putAttribute(inputFlowFile, PUT_DATABASE_RECORD_ERROR, e.getMessage());
             final ExceptionHandler.OnError<FunctionContext, FlowFile> defaultOnError = ExceptionHandler.createOnError(context, session, result, REL_FAILURE, REL_RETRY);
@@ -454,6 +443,7 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
             rollbackOnFailure.apply(fc, flowFileWithAttributes, r, e);
         });
     };
+
 
     @OnScheduled
     public void onScheduled(final ProcessContext context) {
@@ -509,12 +499,12 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
                 throw s;
 
             } catch (IllegalArgumentException
-                    | MalformedRecordException
-                    | SQLNonTransientException e) {
+                    |MalformedRecordException
+                    |SQLNonTransientException e) {
                 return ErrorTypes.InvalidInput;
 
             } catch (IOException
-                    | SQLException e) {
+                    |SQLException e) {
                 return ErrorTypes.TemporalFailure;
 
             } catch (Exception e) {
@@ -538,7 +528,6 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
 
     static class DMLSettings {
         private final boolean translateFieldNames;
-        private final boolean removeDuplicateRecords;
         private final boolean ignoreUnmappedFields;
 
         // Is the unmatched column behaviour fail or warning?
@@ -553,7 +542,6 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
 
         private DMLSettings(ProcessContext context) {
             translateFieldNames = context.getProperty(TRANSLATE_FIELD_NAMES).asBoolean();
-            removeDuplicateRecords = context.getProperty(REMOVE_DUPLICATE_RECORDS).asBoolean();
             ignoreUnmappedFields = IGNORE_UNMATCHED_FIELD.getValue().equalsIgnoreCase(context.getProperty(UNMATCHED_FIELD_BEHAVIOR).getValue());
 
             failUnmappedColumns = FAIL_UNMATCHED_COLUMN.getValue().equalsIgnoreCase(context.getProperty(UNMATCHED_COLUMN_BEHAVIOR).getValue());
@@ -617,58 +605,10 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
         }
     }
 
-    private boolean isDuplicatedSqlStateCode(String code) {
-        switch (code) {
-            case "23505":
-            case "23000":
-                return true;
-            default:
-                return false;
-        }
-    }
-
-    private void createBatch(PreparedStatement ps, Object[] values, List<DataType> dataTypes, List<Integer> fieldIndexes,
-                             String statementType) throws SQLException {
-        if (values != null) {
-            if (fieldIndexes != null) {
-                for (int i = 0; i < fieldIndexes.size(); i++) {
-                    final int currentFieldIndex = fieldIndexes.get(i);
-                    final Object currentValue = values[currentFieldIndex];
-                    final DataType dataType = dataTypes.get(currentFieldIndex);
-                    final int sqlType = DataTypeUtils.getSQLTypeValue(dataType);
-
-                    // If DELETE type, insert the object twice because of the null check (see generateDelete for details)
-                    if (DELETE_TYPE.equalsIgnoreCase(statementType)) {
-                        ps.setObject(i * 2 + 1, currentValue, sqlType);
-                        ps.setObject(i * 2 + 2, currentValue, sqlType);
-                    } else {
-                        ps.setObject(i + 1, currentValue, sqlType);
-                    }
-                }
-            } else {
-                // If there's no index map, assume all values are included and set them in order
-                for (int i = 0; i < values.length; i++) {
-                    final Object currentValue = values[i];
-                    final DataType dataType = dataTypes.get(i);
-                    final int sqlType = DataTypeUtils.getSQLTypeValue(dataType);
-                    // If DELETE type, insert the object twice because of the null check (see generateDelete for details)
-                    if (DELETE_TYPE.equalsIgnoreCase(statementType)) {
-                        ps.setObject(i * 2 + 1, currentValue, sqlType);
-                        ps.setObject(i * 2 + 2, currentValue, sqlType);
-                    } else {
-                        ps.setObject(i + 1, currentValue, sqlType);
-                    }
-                }
-            }
-            ps.addBatch();
-        }
-    }
-
     private void executeDML(ProcessContext context, ProcessSession session, FlowFile flowFile,
                             FunctionContext functionContext, RoutingResult result, Connection con,
-                            RecordReader recordParser, String statementType, DMLSettings settings,
-                            InputStream in, RecordReaderFactory recordParserFactory)
-            throws IllegalArgumentException, MalformedRecordException, IOException, SQLException, SchemaNotFoundException {
+                            RecordReader recordParser, String statementType, DMLSettings settings)
+            throws IllegalArgumentException, MalformedRecordException, IOException, SQLException {
 
         final RecordSchema recordSchema = recordParser.getSchema();
         final ComponentLog log = getLogger();
@@ -746,74 +686,56 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
             final Integer maxBatchSize = context.getProperty(MAX_BATCH_SIZE).evaluateAttributeExpressions(flowFile).asInteger();
             int currentBatchSize = 0;
             int batchIndex = 0;
-            int recordIndex = 0;
-            final List<Map<Object, DataType>> commands = new ArrayList<>();
-            final List<Integer> indexsToIgnore = new ArrayList<>();
-            currentRecord = recordParser.nextRecord();
 
-            while (currentRecord != null) {
+            while ((currentRecord = recordParser.nextRecord()) != null) {
                 Object[] values = currentRecord.getValues();
                 List<DataType> dataTypes = currentRecord.getSchema().getDataTypes();
+                if (values != null) {
+                    if (fieldIndexes != null) {
+                        for (int i = 0; i < fieldIndexes.size(); i++) {
+                            final int currentFieldIndex = fieldIndexes.get(i);
+                            final Object currentValue = values[currentFieldIndex];
+                            final DataType dataType = dataTypes.get(currentFieldIndex);
+                            final int sqlType = DataTypeUtils.getSQLTypeValue(dataType);
 
-                if (indexsToIgnore.contains(recordIndex)) {
-                    recordIndex++;
-                    currentRecord = recordParser.nextRecord();
-                    continue;
-                }
-
-                createBatch(ps, values, dataTypes, fieldIndexes, statementType);
-
-                if (++currentBatchSize == maxBatchSize) {
-                    batchIndex++;
-                    log.debug("Executing query {}; fieldIndexes: {}; batch index: {}; batch size: {}", new Object[]{sqlHolder.getSql(), sqlHolder.getFieldIndexes(), batchIndex, currentBatchSize});
-                    try {
-                        ps.executeBatch();
-                    } catch (BatchUpdateException bue) {
-                        if (isDuplicatedSqlStateCode(bue.getSQLState()) && (settings.removeDuplicateRecords)) {
-                            getLogger().warn("Duplicate values have been inserted into a column that has a UNIQUE constraint");
-                            con.rollback();
-                            ps.clearBatch();
-                            indexsToIgnore.add(bue.getUpdateCounts().length + indexsToIgnore.size());
-                            recordParser = recordParserFactory.createRecordReader(flowFile, in, getLogger());
-                            recordIndex = 0;
-                            currentRecord = recordParser.nextRecord();
-                            continue;
-                        } else {
-                            throw bue;
+                            // If DELETE type, insert the object twice because of the null check (see generateDelete for details)
+                            if (DELETE_TYPE.equalsIgnoreCase(statementType)) {
+                                ps.setObject(i * 2 + 1, currentValue, sqlType);
+                                ps.setObject(i * 2 + 2, currentValue, sqlType);
+                            } else {
+                                ps.setObject(i + 1, currentValue, sqlType);
+                            }
                         }
-                    } finally {
-                        currentBatchSize = 0;
+                    } else {
+                        // If there's no index map, assume all values are included and set them in order
+                        for (int i = 0; i < values.length; i++) {
+                            final Object currentValue = values[i];
+                            final DataType dataType = dataTypes.get(i);
+                            final int sqlType = DataTypeUtils.getSQLTypeValue(dataType);
+                            // If DELETE type, insert the object twice because of the null check (see generateDelete for details)
+                            if (DELETE_TYPE.equalsIgnoreCase(statementType)) {
+                                ps.setObject(i * 2 + 1, currentValue, sqlType);
+                                ps.setObject(i * 2 + 2, currentValue, sqlType);
+                            } else {
+                                ps.setObject(i + 1, currentValue, sqlType);
+                            }
+                        }
                     }
-                }
-
-                recordIndex++;
-                currentRecord = recordParser.nextRecord();
-
-                if (currentRecord == null) {//there are no more records but I still don't call executeBatch
-                    if (currentBatchSize > 0) {
+                    ps.addBatch();
+                    if (++currentBatchSize == maxBatchSize) {
                         batchIndex++;
                         log.debug("Executing query {}; fieldIndexes: {}; batch index: {}; batch size: {}", new Object[]{sqlHolder.getSql(), sqlHolder.getFieldIndexes(), batchIndex, currentBatchSize});
-                        try {
-                            ps.executeBatch();
-                        } catch (BatchUpdateException bue) {
-                            if (isDuplicatedSqlStateCode(bue.getSQLState()) && (settings.removeDuplicateRecords)) {
-                                getLogger().warn("Duplicate values have been inserted into a column that has a UNIQUE constraint");
-                                con.rollback();
-                                ps.clearBatch();
-                                indexsToIgnore.add(bue.getUpdateCounts().length + indexsToIgnore.size());
-                                recordParser = recordParserFactory.createRecordReader(flowFile, in, getLogger());
-                                recordIndex = 0;
-                                currentRecord = recordParser.nextRecord();
-                            } else {
-                                throw bue;
-                            }
-                        } finally {
-                            currentBatchSize = 0;
-                        }
+                        ps.executeBatch();
+                        currentBatchSize = 0;
                     }
                 }
             }
 
+            if (currentBatchSize > 0) {
+                batchIndex++;
+                log.debug("Executing query {}; fieldIndexes: {}; batch index: {}; batch size: {}", new Object[]{sqlHolder.getSql(), sqlHolder.getFieldIndexes(), batchIndex, currentBatchSize});
+                ps.executeBatch();
+            }
             result.routeTo(flowFile, REL_SUCCESS);
             session.getProvenanceReporter().send(flowFile, functionContext.jdbcUrl);
 
@@ -1268,8 +1190,7 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
             SchemaKey schemaKey = (SchemaKey) o;
 
             if (catalog != null ? !catalog.equals(schemaKey.catalog) : schemaKey.catalog != null) return false;
-            if (schemaName != null ? !schemaName.equals(schemaKey.schemaName) : schemaKey.schemaName != null)
-                return false;
+            if (schemaName != null ? !schemaName.equals(schemaKey.schemaName) : schemaKey.schemaName != null) return false;
             return tableName.equals(schemaKey.tableName);
         }
     }
