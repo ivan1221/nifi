@@ -733,7 +733,7 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
                         ps.executeBatch();
                     } catch (BatchUpdateException bue) {
                         if (isDuplicatedSqlStateCode(bue.getSQLState()) && (settings.removeDuplicateRecords)) {
-                            getLogger().debug("Duplicate values have been inserted into a column that has a UNIQUE constraint");
+                            log.debug("Duplicate values have been inserted into a column that has a UNIQUE constraint");
                             batchExceptionCount++;
                             con.rollback();
                             ps.clearBatch();
@@ -765,7 +765,7 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
                             ps.executeBatch();
                         } catch (BatchUpdateException bue) {
                             if (isDuplicatedSqlStateCode(bue.getSQLState()) && (settings.removeDuplicateRecords) && batchExceptionCount < 10) {
-                                getLogger().debug("Duplicate values have been inserted into a column that has a UNIQUE constraint");
+                                log.debug("Duplicate values have been inserted into a column that has a UNIQUE constraint");
                                 batchExceptionCount++;
                                 con.rollback();
                                 ps.clearBatch();
