@@ -619,6 +619,13 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
         }
     }
 
+    private int getIndexToIgnore(int maxBatchSize, int offset, int batchIndex, final List<Integer> indexesToIgnore) {
+        int recordsOverridden = indexesToIgnore.size();
+        int start = batchIndex * maxBatchSize - maxBatchSize;
+        //Record to ignore index
+        return offset + recordsOverridden + start;
+    }
+
     private void executeDML(ProcessContext context, ProcessSession session, FlowFile flowFile,
                             FunctionContext functionContext, RoutingResult result, Connection con,
                             RecordReader recordParser, String statementType, DMLSettings settings,
@@ -702,6 +709,7 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
             int currentBatchSize = 0;
             int batchIndex = 0;
             int recordIndex = 0;
+            int batchExceptionCount = 0;
             final List<Map<Object, DataType>> commands = new ArrayList<>();
             final List<Integer> indexesToIgnore = new ArrayList<>();
             currentRecord = recordParser.nextRecord();
@@ -725,12 +733,17 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
                         ps.executeBatch();
                     } catch (BatchUpdateException bue) {
                         if (isDuplicatedSqlStateCode(bue.getSQLState()) && (settings.removeDuplicateRecords)) {
-                            getLogger().warn("Duplicate values have been inserted into a column that has a UNIQUE constraint");
+                            getLogger().debug("Duplicate values have been inserted into a column that has a UNIQUE constraint");
+                            batchExceptionCount++;
                             con.rollback();
                             ps.clearBatch();
-                            indexesToIgnore.add(bue.getUpdateCounts().length + indexesToIgnore.size());
-                            recordParser = recordParserFactory.createRecordReader(flowFile, in, getLogger());
+                            int offset = bue.getUpdateCounts() != null ? bue.getUpdateCounts().length : 0;
+                            int ignore = getIndexToIgnore(maxBatchSize, offset, batchIndex, indexesToIgnore);
+                            log.debug("Index error {}; size array {}; index ingore {}; values {}; ", new Object[]{(bue.getUpdateCounts().length), indexesToIgnore.size(), ignore, indexesToIgnore.toString()});
+                            indexesToIgnore.add(ignore);
+                            batchIndex = 0;
                             recordIndex = 0;
+                            recordParser = recordParserFactory.createRecordReader(flowFile, in, getLogger());
                             currentRecord = recordParser.nextRecord();
                             continue;
                         } else {
@@ -751,13 +764,18 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
                         try {
                             ps.executeBatch();
                         } catch (BatchUpdateException bue) {
-                            if (isDuplicatedSqlStateCode(bue.getSQLState()) && (settings.removeDuplicateRecords)) {
-                                getLogger().warn("Duplicate values have been inserted into a column that has a UNIQUE constraint");
+                            if (isDuplicatedSqlStateCode(bue.getSQLState()) && (settings.removeDuplicateRecords) && batchExceptionCount < 10) {
+                                getLogger().debug("Duplicate values have been inserted into a column that has a UNIQUE constraint");
+                                batchExceptionCount++;
                                 con.rollback();
                                 ps.clearBatch();
-                                indexesToIgnore.add(bue.getUpdateCounts().length + indexesToIgnore.size());
-                                recordParser = recordParserFactory.createRecordReader(flowFile, in, getLogger());
+                                int offset = bue.getUpdateCounts() != null ? bue.getUpdateCounts().length : 0;
+                                int ignore = getIndexToIgnore(maxBatchSize, offset, batchIndex, indexesToIgnore);
+                                log.debug("Index error {}; size array {}; index ingore {}; values {}; ", new Object[]{(bue.getUpdateCounts().length), indexesToIgnore.size(), ignore, indexesToIgnore.toString()});
+                                indexesToIgnore.add(ignore);
+                                batchIndex = 0;
                                 recordIndex = 0;
+                                recordParser = recordParserFactory.createRecordReader(flowFile, in, getLogger());
                                 currentRecord = recordParser.nextRecord();
                             } else {
                                 throw bue;
