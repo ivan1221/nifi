@@ -373,6 +373,10 @@ class TestPutDatabaseRecord {
         parser.addRecord(1, 'rec4', 104)
         parser.addRecord(1, 'rec4', 104)
         parser.addRecord(4, 'rec4', 104)
+        parser.addRecord(4, 'rec4', 104)
+        parser.addRecord(4, 'rec4', 104)
+        parser.addRecord(4, 'rec4', 104)
+        parser.addRecord(5, 'rec5', 105)
 
         runner.setProperty(PutDatabaseRecord.RECORD_READER_FACTORY, 'parser')
         runner.setProperty(PutDatabaseRecord.STATEMENT_TYPE, PutDatabaseRecord.INSERT_TYPE)
@@ -404,7 +408,7 @@ class TestPutDatabaseRecord {
         runner.run()
 
         rs = stmt.executeQuery('SELECT * FROM PERSONS')
-/*
+
         assertTrue(rs.next())
         assertEquals(1, rs.getInt(1))
         assertEquals('rec1', rs.getString(2))
@@ -421,7 +425,12 @@ class TestPutDatabaseRecord {
         assertEquals(4, rs.getInt(1))
         assertEquals('rec4', rs.getString(2))
         assertEquals(104, rs.getInt(3))
- */
+        assertTrue(rs.next())
+        assertEquals(5, rs.getInt(1))
+        assertEquals('rec5', rs.getString(2))
+        assertEquals(105, rs.getInt(3))
+        assertFalse(rs.next())
+
         stmt.close()
         conn.close()
     }
