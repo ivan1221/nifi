@@ -207,8 +207,8 @@ public class PutDatabaseRecord extends AbstractSessionFactoryProcessor {
     static final PropertyDescriptor REMOVE_DUPLICATE_RECORDS = new PropertyDescriptor.Builder()
             .name("put-db-remove-duplicate-records")
             .displayName("Remove duplicate records")
-            .description("If true, the processor tries to ignore the ONLY restriction errors" +
-                    "If false, the processor will route the flowfile to the fault relationship in the event of a unique key error.")
+            .description("if true, the processor will attempt to ignore duplicate entries. " +
+                    "If it is false, the processor will send the entire flowfile to the fault relationship when a duplicate key error occurs. ")
             .allowableValues("true", "false")
             .defaultValue("false")
             .build();
