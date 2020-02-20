@@ -18,6 +18,8 @@ package org.apache.nifi.processors.standard
 
 
 import org.apache.commons.dbcp2.DelegatingConnection
+import org.apache.nifi.csv.CSVReader
+import org.apache.nifi.csv.CSVUtils
 import org.apache.nifi.processor.exception.ProcessException
 import org.apache.nifi.processor.util.pattern.RollbackOnFailure
 import org.apache.nifi.reporting.InitializationException
@@ -356,37 +358,24 @@ class TestPutDatabaseRecord {
 
     @Test
     void testInsertBatchUpdateExceptionRemoveDuplicateRecord() throws InitializationException, ProcessException, SQLException, IOException {
+        final CSVReader csvReader = new CSVReader()
+        runner.addControllerService("reader", csvReader)
+        runner.setProperty(csvReader, CSVUtils.FIRST_LINE_IS_HEADER, "true")
+        runner.setProperty(csvReader, CSVUtils.QUOTE_MODE, CSVUtils.QUOTE_MINIMAL.getValue())
+        runner.setProperty(csvReader, CSVUtils.TRAILING_DELIMITER, "false")
+        runner.enableControllerService(csvReader)
+
         recreateTable("PERSONS", createPersons)
-        final MockRecordParser parser = new MockRecordParser()
-        runner.addControllerService("parser", parser)
-        runner.enableControllerService(parser)
 
-        parser.addSchemaField("id", RecordFieldType.INT)
-        parser.addSchemaField("name", RecordFieldType.STRING)
-        parser.addSchemaField("code", RecordFieldType.INT)
-
-        parser.addRecord(1, 'rec1', 101)
-        parser.addRecord(2, 'rec2', 102)
-        parser.addRecord(3, 'rec3', 103)
-        parser.addRecord(1, 'rec4', 104)
-        parser.addRecord(1, 'rec4', 104)
-        parser.addRecord(1, 'rec4', 104)
-        parser.addRecord(1, 'rec4', 104)
-        parser.addRecord(4, 'rec4', 104)
-        parser.addRecord(4, 'rec4', 104)
-        parser.addRecord(4, 'rec4', 104)
-        parser.addRecord(4, 'rec4', 104)
-        parser.addRecord(5, 'rec5', 105)
-
-        runner.setProperty(PutDatabaseRecord.RECORD_READER_FACTORY, 'parser')
+        runner.setProperty(PutDatabaseRecord.RECORD_READER_FACTORY, 'reader')
         runner.setProperty(PutDatabaseRecord.STATEMENT_TYPE, PutDatabaseRecord.INSERT_TYPE)
         runner.setProperty(PutDatabaseRecord.TABLE_NAME, 'PERSONS')
-        runner.setProperty(PutDatabaseRecord.MAX_BATCH_SIZE, '2')
+        runner.setProperty(PutDatabaseRecord.MAX_BATCH_SIZE, '1000')
         runner.setProperty(RollbackOnFailure.ROLLBACK_ON_FAILURE, 'true')
         //I set the value to false an exception is expected
         runner.setProperty(PutDatabaseRecord.REMOVE_DUPLICATE_RECORDS, 'false');
 
-        runner.enqueue(new byte[0])
+        runner.enqueue("id,name,code\n1,rec1,101\n2,rec2,102\n1,rec1,101\n3,rec3,103\n1,rec1,101\n4,rec4,104\n1,rec1,101")
 
         try {
             runner.run()
@@ -404,7 +393,7 @@ class TestPutDatabaseRecord {
 
         //I set the value to true, it is expected to remove duplicate records
         runner.setProperty(PutDatabaseRecord.REMOVE_DUPLICATE_RECORDS, 'true');
-        runner.enqueue(new byte[0])
+        runner.enqueue("id,name,code\n1,rec1,101\n2,rec2,102\n1,rec1,101\n3,rec3,103\n1,rec1,101\n4,rec4,104\n1,rec1,101")
         runner.run()
 
         rs = stmt.executeQuery('SELECT * FROM PERSONS')
@@ -425,11 +414,9 @@ class TestPutDatabaseRecord {
         assertEquals(4, rs.getInt(1))
         assertEquals('rec4', rs.getString(2))
         assertEquals(104, rs.getInt(3))
-        assertTrue(rs.next())
-        assertEquals(5, rs.getInt(1))
-        assertEquals('rec5', rs.getString(2))
-        assertEquals(105, rs.getInt(3))
+
         assertFalse(rs.next())
+        runner.assertTransferCount(PutDatabaseRecord.REL_SUCCESS, 1)
 
         stmt.close()
         conn.close()
